@@ -36,8 +36,30 @@ Automated nginx installation script for Ubuntu-based servers (Ubuntu/Debian) wit
 - Ubuntu or Debian-based Linux distribution
 - Root or sudo privileges
 - Internet connection for package downloads
+- Git (for cloning the repository)
 
-#### Usage
+#### Quick Start (Git Clone)
+
+1. Clone the repository on your server:
+   ```bash
+   git clone <repository-url> /tmp/autoscripts
+   cd /tmp/autoscripts
+   ```
+
+   Or clone to a permanent location:
+   ```bash
+   git clone <repository-url> ~/autoscripts
+   cd ~/autoscripts
+   ```
+
+2. Run the script with sudo:
+   ```bash
+   sudo ./install-nginx.sh
+   ```
+
+   **Note**: Replace `<repository-url>` with your actual git repository URL (e.g., `https://github.com/username/autoscripts.git` or `git@github.com:username/autoscripts.git`)
+
+#### Usage (Manual Copy)
 
 1. Copy the script to your server:
    ```bash
