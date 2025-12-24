@@ -61,17 +61,11 @@ detect_os() {
 check_nginx_installed() {
     if command -v nginx &> /dev/null; then
         NGINX_VERSION=$(nginx -v 2>&1 | awk -F/ '{print $2}')
-        print_warning "Nginx is already installed (version: $NGINX_VERSION)"
-        read -p "Do you want to continue with configuration updates? (y/n): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Installation cancelled by user"
-            exit 0
-        fi
         NGINX_INSTALLED=true
+        return 0  # Return 0 to indicate nginx is installed (management mode)
     else
         NGINX_INSTALLED=false
-        print_info "Nginx is not installed. Proceeding with installation."
+        return 1  # Return 1 to indicate nginx is not installed (installation mode)
     fi
 }
 
@@ -477,33 +471,643 @@ post_installation_summary() {
     echo ""
 }
 
-# Main execution
-main() {
+###############################################################################
+# Management Mode Functions
+###############################################################################
+
+# Function to display management menu
+show_management_menu() {
+    clear
     echo "=========================================="
-    echo "Nginx Installation Automation Script"
+    echo "   Nginx Management Menu"
     echo "=========================================="
     echo ""
+    echo "  1. Add New Site"
+    echo "  2. Remove/Disable Site"
+    echo "  3. Manage SSL Certificates"
+    echo "  4. Edit/View Configurations"
+    echo "  5. View Status and Logs"
+    echo "  6. Manage Firewall Rules"
+    echo "  7. Reload/Restart Service"
+    echo "  8. Exit"
+    echo ""
+    echo "=========================================="
+}
+
+# Function to add new site (Management Mode)
+manage_add_site() {
+    print_info "Adding new site..."
     
+    # Get domain name
+    while true; do
+        read -p "Enter domain name (e.g., example.com): " DOMAIN
+        if validate_domain "$DOMAIN"; then
+            print_success "Domain validated: $DOMAIN"
+            break
+        else
+            print_error "Invalid domain name. Please try again."
+        fi
+    done
+    
+    # Check if site already exists
+    if [[ -f "/etc/nginx/sites-available/$DOMAIN" ]]; then
+        print_warning "Site configuration for $DOMAIN already exists."
+        read -p "Do you want to overwrite it? (y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Operation cancelled."
+            return
+        fi
+    fi
+    
+    # Get document root
+    read -p "Enter document root path (default: /var/www/$DOMAIN): " DOCUMENT_ROOT
+    DOCUMENT_ROOT=${DOCUMENT_ROOT:-/var/www/$DOMAIN}
+    
+    # Create document root
+    print_info "Creating document root: $DOCUMENT_ROOT"
+    mkdir -p "$DOCUMENT_ROOT"
+    chown -R www-data:www-data "$DOCUMENT_ROOT"
+    chmod -R 755 "$DOCUMENT_ROOT"
+    
+    # Create index.html if it doesn't exist
+    if [[ ! -f "$DOCUMENT_ROOT/index.html" ]]; then
+        cat > "$DOCUMENT_ROOT/index.html" << EOF
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Welcome to $DOMAIN</title>
+</head>
+<body>
+    <h1>Welcome to $DOMAIN</h1>
+    <p>Nginx is working correctly!</p>
+</body>
+</html>
+EOF
+    fi
+    print_success "Document root created"
+    
+    # Create nginx site configuration
+    SITE_CONFIG="/etc/nginx/sites-available/$DOMAIN"
+    cat > "$SITE_CONFIG" << EOF
+# HTTP Server Block
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN www.$DOMAIN;
+    
+    root $DOCUMENT_ROOT;
+    index index.html index.htm index.nginx-debian.html;
+    
+    location / {
+        limit_req zone=general burst=20 nodelay;
+        try_files \$uri \$uri/ =404;
+    }
+    
+    access_log /var/log/nginx/${DOMAIN}_access.log;
+    error_log /var/log/nginx/${DOMAIN}_error.log;
+}
+EOF
+    
+    # Enable site
+    if [[ -f "/etc/nginx/sites-enabled/$DOMAIN" ]]; then
+        rm "/etc/nginx/sites-enabled/$DOMAIN"
+    fi
+    ln -s "$SITE_CONFIG" "/etc/nginx/sites-enabled/$DOMAIN"
+    print_success "Site configuration created and enabled"
+    
+    # Test and reload
+    if nginx -t 2>&1 | tee -a "$LOG_FILE"; then
+        systemctl reload nginx
+        print_success "Nginx configuration reloaded"
+    else
+        print_error "Site configuration test failed"
+        return 1
+    fi
+    
+    # Ask about SSL
+    read -p "Do you want to set up SSL certificate for $DOMAIN? (y/n): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        setup_ssl "$DOMAIN"
+    fi
+}
+
+# Function to remove/disable site (Management Mode)
+manage_remove_site() {
+    print_info "Remove/Disable Site"
+    
+    # List available sites
+    echo ""
+    print_info "Available sites:"
+    echo ""
+    SITES_AVAILABLE=($(ls /etc/nginx/sites-available/ 2>/dev/null | grep -v "default"))
+    SITES_ENABLED=($(ls /etc/nginx/sites-enabled/ 2>/dev/null | grep -v "default"))
+    
+    if [[ ${#SITES_AVAILABLE[@]} -eq 0 ]]; then
+        print_warning "No sites available to remove."
+        return
+    fi
+    
+    # Show sites with status
+    INDEX=1
+    for site in "${SITES_AVAILABLE[@]}"; do
+        if [[ " ${SITES_ENABLED[@]} " =~ " ${site} " ]]; then
+            echo "  $INDEX. $site [ENABLED]"
+        else
+            echo "  $INDEX. $site [DISABLED]"
+        fi
+        ((INDEX++))
+    done
+    
+    echo ""
+    read -p "Select site number to remove/disable: " SELECTION
+    SELECTED_SITE="${SITES_AVAILABLE[$((SELECTION-1))]}"
+    
+    if [[ -z "$SELECTED_SITE" ]]; then
+        print_error "Invalid selection."
+        return
+    fi
+    
+    echo ""
+    echo "Options for $SELECTED_SITE:"
+    echo "  1. Disable (remove symlink, keep config)"
+    echo "  2. Delete (remove config file and symlink)"
+    echo "  3. Cancel"
+    echo ""
+    read -p "Choose option (1-3): " OPTION
+    
+    case $OPTION in
+        1)
+            if [[ -f "/etc/nginx/sites-enabled/$SELECTED_SITE" ]]; then
+                rm "/etc/nginx/sites-enabled/$SELECTED_SITE"
+                print_success "Site $SELECTED_SITE disabled"
+            else
+                print_warning "Site is already disabled"
+            fi
+            ;;
+        2)
+            # Get document root before deleting config
+            DOC_ROOT=""
+            if [[ -f "/etc/nginx/sites-available/$SELECTED_SITE" ]]; then
+                DOC_ROOT=$(grep -E "^\s*root\s+" "/etc/nginx/sites-available/$SELECTED_SITE" 2>/dev/null | awk '{print $2}' | tr -d ';')
+            fi
+            
+            if [[ -f "/etc/nginx/sites-enabled/$SELECTED_SITE" ]]; then
+                rm "/etc/nginx/sites-enabled/$SELECTED_SITE"
+            fi
+            if [[ -f "/etc/nginx/sites-available/$SELECTED_SITE" ]]; then
+                rm "/etc/nginx/sites-available/$SELECTED_SITE"
+                print_success "Site $SELECTED_SITE deleted"
+            fi
+            
+            if [[ -n "$DOC_ROOT" && -d "$DOC_ROOT" ]]; then
+                read -p "Do you want to remove document root ($DOC_ROOT)? (y/n): " -n 1 -r
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    rm -rf "$DOC_ROOT"
+                    print_success "Document root removed"
+                fi
+            fi
+            ;;
+        3)
+            print_info "Operation cancelled"
+            return
+            ;;
+        *)
+            print_error "Invalid option"
+            return
+            ;;
+    esac
+    
+    # Test and reload
+    if nginx -t 2>&1 | tee -a "$LOG_FILE"; then
+        systemctl reload nginx
+        print_success "Nginx configuration reloaded"
+    else
+        print_error "Configuration test failed"
+    fi
+}
+
+# Function to manage SSL certificates (Management Mode)
+manage_ssl() {
+    print_info "SSL Certificate Management"
+    echo ""
+    echo "  1. List all certificates"
+    echo "  2. Renew specific certificate"
+    echo "  3. Renew all certificates"
+    echo "  4. Add certificate for existing site"
+    echo "  5. Check certificate expiration"
+    echo "  6. Test certificate renewal (dry-run)"
+    echo "  7. Back to main menu"
+    echo ""
+    read -p "Choose option (1-7): " SSL_OPTION
+    
+    case $SSL_OPTION in
+        1)
+            print_info "Listing all certificates:"
+            certbot certificates
+            ;;
+        2)
+            certbot certificates
+            echo ""
+            read -p "Enter domain name to renew: " DOMAIN
+            certbot renew --cert-name "$DOMAIN" --force-renewal
+            systemctl reload nginx
+            ;;
+        3)
+            print_info "Renewing all certificates..."
+            certbot renew
+            systemctl reload nginx
+            print_success "All certificates renewed"
+            ;;
+        4)
+            read -p "Enter domain name: " DOMAIN
+            if validate_domain "$DOMAIN"; then
+                setup_ssl "$DOMAIN"
+            else
+                print_error "Invalid domain name"
+            fi
+            ;;
+        5)
+            print_info "Certificate expiration dates:"
+            certbot certificates | grep -E "Certificate Name|Expiry Date"
+            ;;
+        6)
+            print_info "Testing certificate renewal (dry-run)..."
+            certbot renew --dry-run
+            ;;
+        7)
+            return
+            ;;
+        *)
+            print_error "Invalid option"
+            ;;
+    esac
+}
+
+# Function to edit/view configurations (Management Mode)
+manage_edit_config() {
+    print_info "Edit/View Configurations"
+    echo ""
+    echo "  1. View main nginx configuration"
+    echo "  2. View specific site configuration"
+    echo "  3. Edit main nginx configuration"
+    echo "  4. Edit site configuration"
+    echo "  5. View security headers configuration"
+    echo "  6. View rate limiting configuration"
+    echo "  7. Backup configuration"
+    echo "  8. Back to main menu"
+    echo ""
+    read -p "Choose option (1-8): " CONFIG_OPTION
+    
+    case $CONFIG_OPTION in
+        1)
+            less /etc/nginx/nginx.conf
+            ;;
+        2)
+            SITES=($(ls /etc/nginx/sites-available/ 2>/dev/null | grep -v "default"))
+            if [[ ${#SITES[@]} -eq 0 ]]; then
+                print_warning "No sites available"
+                return
+            fi
+            INDEX=1
+            for site in "${SITES[@]}"; do
+                echo "  $INDEX. $site"
+                ((INDEX++))
+            done
+            read -p "Select site number: " SELECTION
+            SELECTED_SITE="${SITES[$((SELECTION-1))]}"
+            if [[ -n "$SELECTED_SITE" ]]; then
+                less "/etc/nginx/sites-available/$SELECTED_SITE"
+            fi
+            ;;
+        3)
+            backup_config
+            ${EDITOR:-nano} /etc/nginx/nginx.conf
+            if nginx -t; then
+                systemctl reload nginx
+                print_success "Configuration updated and reloaded"
+            else
+                print_error "Configuration test failed. Please fix errors."
+            fi
+            ;;
+        4)
+            SITES=($(ls /etc/nginx/sites-available/ 2>/dev/null | grep -v "default"))
+            if [[ ${#SITES[@]} -eq 0 ]]; then
+                print_warning "No sites available"
+                return
+            fi
+            INDEX=1
+            for site in "${SITES[@]}"; do
+                echo "  $INDEX. $site"
+                ((INDEX++))
+            done
+            read -p "Select site number: " SELECTION
+            SELECTED_SITE="${SITES[$((SELECTION-1))]}"
+            if [[ -n "$SELECTED_SITE" ]]; then
+                ${EDITOR:-nano} "/etc/nginx/sites-available/$SELECTED_SITE"
+                if nginx -t; then
+                    systemctl reload nginx
+                    print_success "Configuration updated and reloaded"
+                else
+                    print_error "Configuration test failed. Please fix errors."
+                fi
+            fi
+            ;;
+        5)
+            if [[ -f "/etc/nginx/conf.d/security-headers.conf" ]]; then
+                cat /etc/nginx/conf.d/security-headers.conf
+            else
+                print_warning "Security headers configuration not found"
+            fi
+            ;;
+        6)
+            if [[ -f "/etc/nginx/conf.d/rate-limit.conf" ]]; then
+                cat /etc/nginx/conf.d/rate-limit.conf
+            else
+                print_warning "Rate limiting configuration not found"
+            fi
+            ;;
+        7)
+            backup_config
+            print_success "Configuration backed up"
+            ;;
+        8)
+            return
+            ;;
+        *)
+            print_error "Invalid option"
+            ;;
+    esac
+}
+
+# Function to view status and logs (Management Mode)
+manage_view_status() {
+    print_info "View Status and Logs"
+    echo ""
+    echo "  1. Nginx service status"
+    echo "  2. Nginx version"
+    echo "  3. List enabled sites"
+    echo "  4. View error log (real-time)"
+    echo "  5. View access log (real-time)"
+    echo "  6. View installation log"
+    echo "  7. Show active connections"
+    echo "  8. Show nginx process information"
+    echo "  9. Back to main menu"
+    echo ""
+    read -p "Choose option (1-9): " STATUS_OPTION
+    
+    case $STATUS_OPTION in
+        1)
+            systemctl status nginx
+            ;;
+        2)
+            nginx -v
+            ;;
+        3)
+            print_info "Enabled sites:"
+            ls -la /etc/nginx/sites-enabled/ 2>/dev/null | grep -v "^total" | awk '{print $9}'
+            ;;
+        4)
+            print_info "Viewing error log (Ctrl+C to exit)..."
+            tail -f /var/log/nginx/error.log
+            ;;
+        5)
+            print_info "Viewing access log (Ctrl+C to exit)..."
+            tail -f /var/log/nginx/access.log
+            ;;
+        6)
+            if [[ -f "$LOG_FILE" ]]; then
+                less "$LOG_FILE"
+            else
+                print_warning "Installation log not found"
+            fi
+            ;;
+        7)
+            netstat -an | grep -E ":80|:443" | grep ESTABLISHED | wc -l
+            print_info "Active connections shown above"
+            ;;
+        8)
+            ps aux | grep nginx | grep -v grep
+            ;;
+        9)
+            return
+            ;;
+        *)
+            print_error "Invalid option"
+            ;;
+    esac
+}
+
+# Function to manage firewall (Management Mode)
+manage_firewall() {
+    print_info "Manage Firewall Rules"
+    
+    if ! command -v ufw &> /dev/null; then
+        print_warning "UFW is not installed."
+        return
+    fi
+    
+    echo ""
+    echo "  1. View firewall status"
+    echo "  2. Allow HTTP/HTTPS (ports 80/443)"
+    echo "  3. Remove HTTP/HTTPS rules"
+    echo "  4. Check if ports 80/443 are open"
+    echo "  5. Back to main menu"
+    echo ""
+    read -p "Choose option (1-5): " FW_OPTION
+    
+    case $FW_OPTION in
+        1)
+            ufw status verbose
+            ;;
+        2)
+            ufw allow 'Nginx Full'
+            print_success "Firewall rules added"
+            ;;
+        3)
+            ufw delete allow 'Nginx Full'
+            print_success "Firewall rules removed"
+            ;;
+        4)
+            if ufw status | grep -qE "80|443"; then
+                print_success "Ports 80/443 are open"
+            else
+                print_warning "Ports 80/443 are not open"
+            fi
+            ;;
+        5)
+            return
+            ;;
+        *)
+            print_error "Invalid option"
+            ;;
+    esac
+}
+
+# Function to reload/restart service (Management Mode)
+manage_service_control() {
+    print_info "Reload/Restart Service"
+    echo ""
+    echo "  1. Test nginx configuration"
+    echo "  2. Reload nginx (graceful)"
+    echo "  3. Restart nginx (full restart)"
+    echo "  4. Stop nginx"
+    echo "  5. Start nginx"
+    echo "  6. Enable nginx on boot"
+    echo "  7. Disable nginx on boot"
+    echo "  8. Back to main menu"
+    echo ""
+    read -p "Choose option (1-8): " SERVICE_OPTION
+    
+    case $SERVICE_OPTION in
+        1)
+            if nginx -t; then
+                print_success "Configuration test passed"
+            else
+                print_error "Configuration test failed"
+            fi
+            ;;
+        2)
+            if nginx -t; then
+                systemctl reload nginx
+                print_success "Nginx reloaded"
+            else
+                print_error "Configuration test failed. Cannot reload."
+            fi
+            ;;
+        3)
+            if nginx -t; then
+                systemctl restart nginx
+                print_success "Nginx restarted"
+            else
+                print_error "Configuration test failed. Cannot restart."
+            fi
+            ;;
+        4)
+            systemctl stop nginx
+            print_success "Nginx stopped"
+            ;;
+        5)
+            systemctl start nginx
+            print_success "Nginx started"
+            ;;
+        6)
+            systemctl enable nginx
+            print_success "Nginx enabled on boot"
+            ;;
+        7)
+            systemctl disable nginx
+            print_success "Nginx disabled on boot"
+            ;;
+        8)
+            return
+            ;;
+        *)
+            print_error "Invalid option"
+            ;;
+    esac
+}
+
+# Function to run management mode
+run_management_mode() {
+    NGINX_VERSION=$(nginx -v 2>&1 | awk -F/ '{print $2}')
+    
+    while true; do
+        show_management_menu
+        read -p "Select an option (1-8): " MENU_CHOICE
+        
+        case $MENU_CHOICE in
+            1)
+                manage_add_site
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            2)
+                manage_remove_site
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            3)
+                manage_ssl
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            4)
+                manage_edit_config
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            5)
+                manage_view_status
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            6)
+                manage_firewall
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            7)
+                manage_service_control
+                echo ""
+                read -p "Press Enter to continue..."
+                ;;
+            8)
+                print_info "Exiting management mode. Goodbye!"
+                exit 0
+                ;;
+            *)
+                print_error "Invalid option. Please select 1-8."
+                sleep 2
+                ;;
+        esac
+    done
+}
+
+# Main execution
+main() {
     # Initialize log file
     touch "$LOG_FILE"
-    echo "Installation started at $(date)" >> "$LOG_FILE"
     
-    # Run installation steps
+    # Check root and OS first
     check_root
     detect_os
-    check_nginx_installed
-    display_system_info
-    update_system
-    install_nginx
-    configure_firewall
-    apply_security_hardening
-    optimize_performance
-    manage_service
-    setup_site
-    post_installation_summary
     
-    echo "Installation completed at $(date)" >> "$LOG_FILE"
-    print_success "All done! Nginx is ready to use."
+    # Check if nginx is installed - if yes, enter management mode
+    if check_nginx_installed; then
+        NGINX_VERSION=$(nginx -v 2>&1 | awk -F/ '{print $2}')
+        echo "=========================================="
+        echo "Nginx Management Mode"
+        echo "Nginx version: $NGINX_VERSION"
+        echo "=========================================="
+        echo ""
+        echo "Management started at $(date)" >> "$LOG_FILE"
+        run_management_mode
+    else
+        # Nginx not installed - proceed with installation
+        echo "=========================================="
+        echo "Nginx Installation Automation Script"
+        echo "=========================================="
+        echo ""
+        
+        echo "Installation started at $(date)" >> "$LOG_FILE"
+        
+        # Run installation steps
+        display_system_info
+        update_system
+        install_nginx
+        configure_firewall
+        apply_security_hardening
+        optimize_performance
+        manage_service
+        setup_site
+        post_installation_summary
+        
+        echo "Installation completed at $(date)" >> "$LOG_FILE"
+        print_success "All done! Nginx is ready to use."
+    fi
 }
 
 # Trap errors
