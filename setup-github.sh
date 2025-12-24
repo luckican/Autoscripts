@@ -121,9 +121,23 @@ add_or_update_token() {
 
   username=$(prompt_nonempty "Enter your GitHub username (for URL): ")
 
-  echo -n "Enter GitHub Personal Access Token: "
-  read -rs token
   echo
+  echo "Token input options:"
+  echo "  1) Visible (easier to paste)"
+  echo "  2) Hidden (more secure)"
+  read -r -p "Choose option (1/2, default: 1): " token_visibility
+  token_visibility=${token_visibility:-1}
+
+  echo
+  if [[ "$token_visibility" == "2" ]]; then
+    echo -n "Enter GitHub Personal Access Token (hidden): "
+    read -rs token
+    echo
+  else
+    print_info "Enter GitHub Personal Access Token (visible - paste-friendly):"
+    read -r token
+  fi
+
   if [[ -z "$token" ]]; then
     print_error "Token cannot be empty."
     return 1
