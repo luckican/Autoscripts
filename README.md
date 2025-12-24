@@ -8,19 +8,32 @@
 
 - [Scripts](#-scripts)
   - [install-nginx.sh](#install-nginxsh)
-    - [Features](#-features)
-    - [Requirements](#-requirements)
-    - [Quick Start](#-quick-start)
-    - [Usage](#-usage)
-    - [What the Script Does](#-what-the-script-does)
-    - [Configuration Files](#-configuration-files)
-    - [Useful Commands](#-useful-commands)
-    - [Troubleshooting](#-troubleshooting)
-    - [Security Notes](#-security-notes)
+  - [setup-github.sh](#setup-githubsh)
 
 ---
 
 ## 📦 Scripts
+
+### `setup-github.sh`
+
+**GitHub Personal Access Token (PAT) configuration script** for VPS servers with flexible token scoping options.
+
+**Platform Support:** Linux (Ubuntu/Debian)  
+**Documentation:** See [GITHUB-SETUP.md](GITHUB-SETUP.md) for complete documentation
+
+**Quick Overview:**
+- Configure git user identity (name/email)
+- Set up GitHub Personal Access Tokens
+- Support for host-wide or per-repo token scoping
+- Update/replace tokens on subsequent runs
+- Manage stored credentials
+
+**Quick Start:**
+```bash
+./setup-github.sh
+```
+
+---
 
 ### `install-nginx.sh`
 
