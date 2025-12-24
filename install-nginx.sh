@@ -187,8 +187,11 @@ add_header X-XSS-Protection "1; mode=block" always;
 add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 EOF
     
-    # Include security headers in main config
-    if ! grep -q "conf.d/security-headers.conf" "$NGINX_CONF"; then
+    # Remove any existing include for security-headers.conf to avoid duplicates
+    sed -i '/include.*security-headers\.conf/d' "$NGINX_CONF"
+    
+    # Include security headers in main config (add after http block, only once)
+    if ! grep -qE "include.*security-headers\.conf" "$NGINX_CONF"; then
         sed -i '/^http {/a\    include /etc/nginx/conf.d/security-headers.conf;' "$NGINX_CONF"
     fi
     print_success "Security headers configured"
@@ -207,9 +210,18 @@ limit_req_zone $binary_remote_addr zone=general:10m rate=10r/s;
 limit_req_zone $binary_remote_addr zone=login:10m rate=1r/s;
 EOF
     
-    # Include rate limiting in main config
-    if ! grep -q "conf.d/rate-limit.conf" "$NGINX_CONF"; then
-        sed -i '/^http {/a\    include /etc/nginx/conf.d/rate-limit.conf;' "$NGINX_CONF"
+    # Remove any existing include for rate-limit.conf to avoid duplicates
+    # This handles cases where the include was added multiple times
+    sed -i '/include.*rate-limit\.conf/d' "$NGINX_CONF"
+    
+    # Check if zone "general" is already defined directly in nginx.conf (not in included files)
+    if grep -q "zone=general" "$NGINX_CONF" 2>/dev/null; then
+        print_warning "Rate limiting zone 'general' already defined in nginx.conf. Skipping include addition."
+    else
+        # Include rate limiting in main config (add after http block, only once)
+        if ! grep -qE "include.*rate-limit\.conf" "$NGINX_CONF"; then
+            sed -i '/^http {/a\    include /etc/nginx/conf.d/rate-limit.conf;' "$NGINX_CONF"
+        fi
     fi
     print_success "Rate limiting configured"
 }
