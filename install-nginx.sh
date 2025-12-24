@@ -187,12 +187,18 @@ add_header X-XSS-Protection "1; mode=block" always;
 add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 EOF
     
-    # Remove any existing include for security-headers.conf to avoid duplicates
+    # Remove any existing explicit include for security-headers.conf to avoid duplicates
+    # (wildcard include /etc/nginx/conf.d/*.conf will automatically include it)
     sed -i '/include.*security-headers\.conf/d' "$NGINX_CONF"
     
-    # Include security headers in main config (add after http block, only once)
-    if ! grep -qE "include.*security-headers\.conf" "$NGINX_CONF"; then
-        sed -i '/^http {/a\    include /etc/nginx/conf.d/security-headers.conf;' "$NGINX_CONF"
+    # Check if wildcard include for conf.d exists (it will auto-include our file)
+    if grep -qE "include.*conf\.d/\*\.conf" "$NGINX_CONF"; then
+        print_info "Wildcard include for conf.d/*.conf detected. Security headers will be auto-included."
+    else
+        # No wildcard, add explicit include
+        if ! grep -qE "include.*security-headers\.conf" "$NGINX_CONF"; then
+            sed -i '/^http {/a\    include /etc/nginx/conf.d/security-headers.conf;' "$NGINX_CONF"
+        fi
     fi
     print_success "Security headers configured"
     
@@ -204,23 +210,30 @@ EOF
     
     # Create rate limiting configuration
     RATE_LIMIT_CONF="/etc/nginx/conf.d/rate-limit.conf"
+    
+    # Always create/update the rate-limit.conf file with correct content
     cat > "$RATE_LIMIT_CONF" << 'EOF'
 # Rate Limiting
 limit_req_zone $binary_remote_addr zone=general:10m rate=10r/s;
 limit_req_zone $binary_remote_addr zone=login:10m rate=1r/s;
 EOF
     
-    # Remove any existing include for rate-limit.conf to avoid duplicates
-    # This handles cases where the include was added multiple times
+    # Remove ALL existing explicit includes for rate-limit.conf to prevent duplicates
+    # (wildcard include /etc/nginx/conf.d/*.conf will automatically include it)
     sed -i '/include.*rate-limit\.conf/d' "$NGINX_CONF"
     
-    # Check if zone "general" is already defined directly in nginx.conf (not in included files)
-    if grep -q "zone=general" "$NGINX_CONF" 2>/dev/null; then
-        print_warning "Rate limiting zone 'general' already defined in nginx.conf. Skipping include addition."
+    # Check if wildcard include for conf.d exists (it will auto-include our file)
+    if grep -qE "include.*conf\.d/\*\.conf" "$NGINX_CONF"; then
+        print_info "Wildcard include for conf.d/*.conf detected. Rate limiting will be auto-included."
     else
-        # Include rate limiting in main config (add after http block, only once)
-        if ! grep -qE "include.*rate-limit\.conf" "$NGINX_CONF"; then
-            sed -i '/^http {/a\    include /etc/nginx/conf.d/rate-limit.conf;' "$NGINX_CONF"
+        # No wildcard, check if zone is already defined directly in nginx.conf
+        if grep -E "^\s*limit_req_zone.*zone=general" "$NGINX_CONF" 2>/dev/null | grep -v "^#" | grep -q "zone=general"; then
+            print_warning "Rate limiting zone 'general' already defined directly in nginx.conf. Skipping include addition."
+        else
+            # Add explicit include if needed
+            if ! grep -qE "include.*rate-limit\.conf" "$NGINX_CONF"; then
+                sed -i '/^http {/a\    include /etc/nginx/conf.d/rate-limit.conf;' "$NGINX_CONF"
+            fi
         fi
     fi
     print_success "Rate limiting configured"
